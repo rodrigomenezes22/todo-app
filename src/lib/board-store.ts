@@ -27,7 +27,6 @@ const fallbackWorkspace: WorkspaceData = {
 };
 
 type BoardDocument = {
-  _id: ObjectId;
   userId: ObjectId;
   workspace: WorkspaceData;
   createdAt: Date;
