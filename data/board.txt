@@ -1,0 +1,44 @@
+{
+  "views": [
+    {
+      "id": "untitled",
+      "name": "BizHero",
+      "board": {
+        "columns": [
+          {
+            "id": "todo",
+            "title": "To Do",
+            "color": "#ff8a3d",
+            "taskIds": [
+              "task-1779285986698-83uuyy"
+            ]
+          },
+          {
+            "id": "doing",
+            "title": "Doing",
+            "color": "#26a4d8",
+            "taskIds": []
+          },
+          {
+            "id": "done",
+            "title": "Done",
+            "color": "#2dce7c",
+            "taskIds": []
+          },
+          {
+            "id": "trash",
+            "title": "Trash",
+            "color": "#ff4655",
+            "taskIds": []
+          }
+        ],
+        "tasks": {
+          "task-1779285986698-83uuyy": {
+            "id": "task-1779285986698-83uuyy",
+            "title": "Workflow SMS"
+          }
+        }
+      }
+    }
+  ]
+}
