@@ -346,10 +346,25 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        throw new Error("Save failed");
+        let details = "";
+
+        try {
+          const payload = (await response.json()) as { error?: string };
+          details = payload.error ? `: ${payload.error}` : "";
+        } catch {
+          // Ignore invalid JSON body and use status text below.
+        }
+
+        throw new Error(
+          `Could not save changes (HTTP ${response.status})${details}`,
+        );
       }
-    } catch {
-      setErrorMessage("Could not save changes to data/board.txt");
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not save changes to board data";
+      setErrorMessage(message);
     } finally {
       setIsSaving(false);
     }

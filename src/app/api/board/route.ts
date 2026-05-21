@@ -17,8 +17,13 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const workspace = (await request.json()) as WorkspaceData;
-  await writeBoard(workspace);
+  try {
+    const workspace = (await request.json()) as WorkspaceData;
+    await writeBoard(workspace);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Save failed";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 
   return NextResponse.json({ success: true });
 }

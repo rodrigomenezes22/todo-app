@@ -2,8 +2,15 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { BoardData, WorkspaceData } from "@/lib/types";
 
-const dataDir = path.join(process.cwd(), "data");
-const boardFilePath = path.join(dataDir, "board.txt");
+const localDataDir = path.join(process.cwd(), "data");
+const localBoardFilePath = path.join(localDataDir, "board.txt");
+const runtimeTempRoot =
+  process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP ?? "/tmp";
+const runtimeDataDir = path.join(runtimeTempRoot, "todo-app-data");
+const runtimeBoardFilePath = path.join(runtimeDataDir, "board.txt");
+const boardFilePathCandidates = [localBoardFilePath, runtimeBoardFilePath];
+
+let writableBoardFilePath: string | null = null;
 
 const fallbackBoard: BoardData = {
   columns: [
@@ -26,17 +33,44 @@ const fallbackWorkspace: WorkspaceData = {
 };
 
 async function ensureBoardFile(): Promise<void> {
-  await fs.mkdir(dataDir, { recursive: true });
-
-  try {
-    await fs.access(boardFilePath);
-  } catch {
-    await fs.writeFile(
-      boardFilePath,
-      JSON.stringify(fallbackWorkspace, null, 2),
-      "utf8",
-    );
+  if (writableBoardFilePath) {
+    return;
   }
+
+  let lastError: unknown;
+
+  for (const filePath of boardFilePathCandidates) {
+    try {
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+
+      try {
+        await fs.access(filePath);
+      } catch {
+        await fs.writeFile(
+          filePath,
+          JSON.stringify(fallbackWorkspace, null, 2),
+          "utf8",
+        );
+      }
+
+      await fs.appendFile(filePath, "");
+      writableBoardFilePath = filePath;
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const detail = lastError instanceof Error ? ` ${lastError.message}` : "";
+  throw new Error(`Unable to locate writable board file.${detail}`);
+}
+
+function getBoardFilePath(): string {
+  if (!writableBoardFilePath) {
+    throw new Error("Board file path is not initialized");
+  }
+
+  return writableBoardFilePath;
 }
 
 function looksLikeLegacyBoard(data: unknown): data is BoardData {
@@ -51,7 +85,7 @@ function looksLikeWorkspace(data: unknown): data is WorkspaceData {
 
 export async function readBoard(): Promise<WorkspaceData> {
   await ensureBoardFile();
-  const raw = await fs.readFile(boardFilePath, "utf8");
+  const raw = await fs.readFile(getBoardFilePath(), "utf8");
 
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -80,5 +114,9 @@ export async function readBoard(): Promise<WorkspaceData> {
 
 export async function writeBoard(workspace: WorkspaceData): Promise<void> {
   await ensureBoardFile();
-  await fs.writeFile(boardFilePath, JSON.stringify(workspace, null, 2), "utf8");
+  await fs.writeFile(
+    getBoardFilePath(),
+    JSON.stringify(workspace, null, 2),
+    "utf8",
+  );
 }
