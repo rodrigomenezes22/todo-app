@@ -8,14 +8,12 @@ export const AUTH_COOKIE = "tm_auth";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
 type UserDocument = {
-  _id: ObjectId;
   username: string;
   passwordHash: string;
   createdAt: Date;
 };
 
 type SessionDocument = {
-  _id: ObjectId;
   token: string;
   userId: ObjectId;
   createdAt: Date;
