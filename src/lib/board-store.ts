@@ -1,16 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { ObjectId } from "mongodb";
+import { getDatabase } from "@/lib/mongodb";
 import type { BoardData, WorkspaceData } from "@/lib/types";
 
-const localDataDir = path.join(process.cwd(), "data");
-const localBoardFilePath = path.join(localDataDir, "board.txt");
-const runtimeTempRoot =
-  process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP ?? "/tmp";
-const runtimeDataDir = path.join(runtimeTempRoot, "todo-app-data");
-const runtimeBoardFilePath = path.join(runtimeDataDir, "board.txt");
-const boardFilePathCandidates = [localBoardFilePath, runtimeBoardFilePath];
-
-let writableBoardFilePath: string | null = null;
+const legacyBoardFilePath = path.join(process.cwd(), "data", "board.txt");
 
 const fallbackBoard: BoardData = {
   columns: [
@@ -32,45 +26,27 @@ const fallbackWorkspace: WorkspaceData = {
   ],
 };
 
-async function ensureBoardFile(): Promise<void> {
-  if (writableBoardFilePath) {
-    return;
+type BoardDocument = {
+  _id: ObjectId;
+  userId: ObjectId;
+  workspace: WorkspaceData;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+let boardIndexesPromise: Promise<void> | null = null;
+
+async function ensureBoardIndexes(): Promise<void> {
+  if (!boardIndexesPromise) {
+    boardIndexesPromise = (async () => {
+      const db = await getDatabase();
+      await db
+        .collection<BoardDocument>("boards")
+        .createIndex({ userId: 1 }, { unique: true });
+    })();
   }
 
-  let lastError: unknown;
-
-  for (const filePath of boardFilePathCandidates) {
-    try {
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-
-      try {
-        await fs.access(filePath);
-      } catch {
-        await fs.writeFile(
-          filePath,
-          JSON.stringify(fallbackWorkspace, null, 2),
-          "utf8",
-        );
-      }
-
-      await fs.appendFile(filePath, "");
-      writableBoardFilePath = filePath;
-      return;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  const detail = lastError instanceof Error ? ` ${lastError.message}` : "";
-  throw new Error(`Unable to locate writable board file.${detail}`);
-}
-
-function getBoardFilePath(): string {
-  if (!writableBoardFilePath) {
-    throw new Error("Board file path is not initialized");
-  }
-
-  return writableBoardFilePath;
+  await boardIndexesPromise;
 }
 
 function looksLikeLegacyBoard(data: unknown): data is BoardData {
@@ -83,40 +59,111 @@ function looksLikeWorkspace(data: unknown): data is WorkspaceData {
   return Boolean(candidate?.views && Array.isArray(candidate.views));
 }
 
-export async function readBoard(): Promise<WorkspaceData> {
-  await ensureBoardFile();
-  const raw = await fs.readFile(getBoardFilePath(), "utf8");
+function parseWorkspacePayload(payload: unknown): WorkspaceData | null {
+  if (looksLikeWorkspace(payload) && payload.views.length > 0) {
+    return payload;
+  }
 
+  if (looksLikeLegacyBoard(payload)) {
+    return {
+      views: [
+        {
+          id: "untitled",
+          name: "Untitled view",
+          board: payload,
+        },
+      ],
+    };
+  }
+
+  return null;
+}
+
+async function readLegacyWorkspaceFromFile(): Promise<WorkspaceData | null> {
   try {
+    const raw = await fs.readFile(legacyBoardFilePath, "utf8");
     const parsed = JSON.parse(raw) as unknown;
-
-    if (looksLikeWorkspace(parsed) && parsed.views.length > 0) {
-      return parsed;
-    }
-
-    if (looksLikeLegacyBoard(parsed)) {
-      return {
-        views: [
-          {
-            id: "untitled",
-            name: "Untitled view",
-            board: parsed,
-          },
-        ],
-      };
-    }
-
-    return fallbackWorkspace;
+    return parseWorkspacePayload(parsed);
   } catch {
-    return fallbackWorkspace;
+    return null;
   }
 }
 
-export async function writeBoard(workspace: WorkspaceData): Promise<void> {
-  await ensureBoardFile();
-  await fs.writeFile(
-    getBoardFilePath(),
-    JSON.stringify(workspace, null, 2),
-    "utf8",
+export async function readBoard(userId: string): Promise<WorkspaceData> {
+  await ensureBoardIndexes();
+  const db = await getDatabase();
+  const boards = db.collection<BoardDocument>("boards");
+  const userObjectId = new ObjectId(userId);
+
+  const existing = await boards.findOne({ userId: userObjectId });
+  if (!existing) {
+    return fallbackWorkspace;
+  }
+
+  const parsed = existing.workspace as unknown;
+  return parseWorkspacePayload(parsed) ?? fallbackWorkspace;
+}
+
+export async function writeBoard(
+  userId: string,
+  workspace: WorkspaceData,
+): Promise<void> {
+  await ensureBoardIndexes();
+  const db = await getDatabase();
+  const boards = db.collection<BoardDocument>("boards");
+  const now = new Date();
+
+  await boards.updateOne(
+    { userId: new ObjectId(userId) },
+    {
+      $set: {
+        workspace,
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        createdAt: now,
+      },
+    },
+    { upsert: true },
   );
+}
+
+export async function migrateLegacyBoardForInitialCustomer(
+  userId: string,
+  username: string,
+): Promise<boolean> {
+  const migrationUsername =
+    process.env.LEGACY_MIGRATION_USERNAME?.trim().toLowerCase() ?? "";
+  if (!migrationUsername) {
+    return false;
+  }
+
+  if (username.trim().toLowerCase() !== migrationUsername) {
+    return false;
+  }
+
+  await ensureBoardIndexes();
+  const db = await getDatabase();
+  const boards = db.collection<BoardDocument>("boards");
+  const userObjectId = new ObjectId(userId);
+
+  const existing = await boards.findOne({ userId: userObjectId });
+  if (existing) {
+    return false;
+  }
+
+  const legacyWorkspace = await readLegacyWorkspaceFromFile();
+  if (!legacyWorkspace) {
+    return false;
+  }
+
+  const now = new Date();
+  await boards.insertOne({
+    userId: userObjectId,
+    workspace: legacyWorkspace,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return true;
 }

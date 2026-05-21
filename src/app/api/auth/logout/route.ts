@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { AUTH_COOKIE } from "@/lib/auth";
+import { AUTH_COOKIE, clearCurrentSession } from "@/lib/auth";
 
 export async function POST() {
+  await clearCurrentSession();
   const response = NextResponse.json({ success: true });
   response.cookies.set(AUTH_COOKIE, "", {
     httpOnly: true,

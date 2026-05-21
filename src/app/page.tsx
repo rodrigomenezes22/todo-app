@@ -225,9 +225,11 @@ export default function Home() {
 
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [sessionUsername, setSessionUsername] = useState<string | null>(null);
   const [loginState, setLoginState] = useState({
-    username: "admin",
-    password: "ticket123",
+    username: "",
+    password: "",
   });
   const [loginError, setLoginError] = useState("");
 
@@ -261,8 +263,12 @@ export default function Home() {
     async function bootstrapSession() {
       try {
         const response = await fetch("/api/auth/session");
-        const data = (await response.json()) as { authenticated: boolean };
+        const data = (await response.json()) as {
+          authenticated: boolean;
+          username?: string | null;
+        };
         setIsAuthenticated(data.authenticated);
+        setSessionUsername(data.username ?? null);
         if (data.authenticated) {
           const workspaceResponse = await fetch("/api/board");
           if (!workspaceResponse.ok) {
@@ -392,10 +398,44 @@ export default function Home() {
     });
 
     if (!response.ok) {
-      setLoginError("Invalid username or password.");
+      try {
+        const payload = (await response.json()) as { error?: string };
+        setLoginError(payload.error ?? "Invalid username or password.");
+      } catch {
+        setLoginError("Invalid username or password.");
+      }
       return;
     }
 
+    const payload = (await response.json()) as { username?: string };
+
+    setSessionUsername(payload.username ?? loginState.username.trim());
+    setIsAuthenticated(true);
+    await loadWorkspace();
+  }
+
+  async function handleRegister(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoginError("");
+
+    const response = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(loginState),
+    });
+
+    if (!response.ok) {
+      try {
+        const payload = (await response.json()) as { error?: string };
+        setLoginError(payload.error ?? "Could not create account.");
+      } catch {
+        setLoginError("Could not create account.");
+      }
+      return;
+    }
+
+    const payload = (await response.json()) as { username?: string };
+    setSessionUsername(payload.username ?? loginState.username.trim());
     setIsAuthenticated(true);
     await loadWorkspace();
   }
@@ -403,6 +443,7 @@ export default function Home() {
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
     setIsAuthenticated(false);
+    setSessionUsername(null);
     setWorkspace(null);
   }
 
@@ -705,13 +746,20 @@ export default function Home() {
     return (
       <main className="login-shell">
         <div className="glass-card">
-          <h1>Ticketmaster Internal Board</h1>
-          <p>Sign in to view and manage your shared tasks.</p>
+          <h1>Customer Workspace</h1>
+          <p>
+            {authMode === "login"
+              ? "Sign in to continue to your board."
+              : "Create a customer account to start your board."}
+          </p>
 
-          <form className="login-form" onSubmit={handleLogin}>
+          <form
+            className="login-form"
+            onSubmit={authMode === "login" ? handleLogin : handleRegister}>
             <label htmlFor="username">Username</label>
             <input
               id="username"
+              autoComplete="username"
               value={loginState.username}
               onChange={(event) =>
                 setLoginState((state) => ({
@@ -725,6 +773,9 @@ export default function Home() {
             <input
               id="password"
               type="password"
+              autoComplete={
+                authMode === "login" ? "current-password" : "new-password"
+              }
               value={loginState.password}
               onChange={(event) =>
                 setLoginState((state) => ({
@@ -736,10 +787,27 @@ export default function Home() {
 
             {loginError && <p className="error-text">{loginError}</p>}
 
-            <button type="submit">Login</button>
+            <button type="submit">
+              {authMode === "login" ? "Login" : "Create Account"}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                setLoginError("");
+                setAuthMode((mode) =>
+                  mode === "login" ? "register" : "login",
+                );
+              }}>
+              {authMode === "login"
+                ? "Need an account? Register"
+                : "Already have an account? Login"}
+            </button>
           </form>
 
-          <small>Default login: admin / ticket123</small>
+          <small>
+            Accounts are private. Each customer gets their own board.
+          </small>
         </div>
       </main>
     );
@@ -835,7 +903,8 @@ export default function Home() {
           <div>
             <h1>{activeViewName}</h1>
             <p>
-              {board.columns.length} columns for your internal workflow
+              {board.columns.length} columns for your workflow
+              {sessionUsername && <span> · @{sessionUsername}</span>}
               {isSaving && <span className="saving-pill">Saving...</span>}
             </p>
           </div>

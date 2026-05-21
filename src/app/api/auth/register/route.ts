@@ -1,17 +1,17 @@
 import { NextResponse } from "next/server";
-import { AUTH_COOKIE, getAuthCookieMaxAge, loginCustomer } from "@/lib/auth";
+import { AUTH_COOKIE, getAuthCookieMaxAge, registerCustomer } from "@/lib/auth";
 import { migrateLegacyBoardForInitialCustomer } from "@/lib/board-store";
 
-type LoginPayload = {
+type RegisterPayload = {
   username?: string;
   password?: string;
 };
 
 export async function POST(request: Request) {
-  let body: LoginPayload;
+  let body: RegisterPayload;
 
   try {
-    body = (await request.json()) as LoginPayload;
+    body = (await request.json()) as RegisterPayload;
   } catch {
     return NextResponse.json(
       { error: "Invalid request body" },
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { sessionToken, user } = await loginCustomer(
+    const { sessionToken, user } = await registerCustomer(
       body.username ?? "",
       body.password ?? "",
     );
@@ -42,7 +42,8 @@ export async function POST(request: Request) {
     return response;
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Invalid username or password.";
-    return NextResponse.json({ error: message }, { status: 401 });
+      error instanceof Error ? error.message : "Registration failed";
+    const status = message === "Username is already taken." ? 409 : 400;
+    return NextResponse.json({ error: message }, { status });
   }
 }
