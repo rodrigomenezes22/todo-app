@@ -13,7 +13,12 @@ const globalMongo = globalThis as typeof globalThis & {
 };
 
 const mongoClientPromise =
-  globalMongo._mongoClientPromise ?? new MongoClient(mongoUri).connect();
+  globalMongo._mongoClientPromise ??
+  new MongoClient(mongoUri, {
+    tls: true,
+    serverSelectionTimeoutMS: 10000,
+    connectTimeoutMS: 10000,
+  }).connect();
 
 globalMongo._mongoClientPromise = mongoClientPromise;
 
