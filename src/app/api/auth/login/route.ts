@@ -43,6 +43,12 @@ export async function POST(request: Request) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Invalid username or password.";
-    return NextResponse.json({ error: message }, { status: 401 });
+    const isAuthError =
+      message === "Invalid username or password." ||
+      message === "Username and password are required.";
+    return NextResponse.json(
+      { error: isAuthError ? message : "Server error, please try again." },
+      { status: isAuthError ? 401 : 500 },
+    );
   }
 }
