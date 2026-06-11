@@ -27,6 +27,61 @@ const BASE_COLUMNS = [
   { id: "done", title: "Done", color: "#2dce7c" },
   { id: "trash", title: "Trash", color: "#ff4655" },
 ];
+const TRACKED_STATUS_COLUMNS = new Set(["todo", "doing", "done"]);
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function getLocalDayStartMs(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function getTrackedStatusColumnId(
+  columnId: string,
+): "todo" | "doing" | "done" | null {
+  if (!TRACKED_STATUS_COLUMNS.has(columnId)) {
+    return null;
+  }
+
+  return columnId as "todo" | "doing" | "done";
+}
+
+function buildTaskStatusDateLabel(task: Task, columnId: string): string | null {
+  const statusId = getTrackedStatusColumnId(columnId);
+  if (!statusId) {
+    return null;
+  }
+
+  const statusDate = task.statusDates?.[statusId];
+  if (!statusDate) {
+    return null;
+  }
+
+  const parsed = new Date(statusDate);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const todayStartMs = getLocalDayStartMs(new Date());
+  const targetStartMs = getLocalDayStartMs(parsed);
+  const dayDiff = Math.round((todayStartMs - targetStartMs) / MS_PER_DAY);
+
+  if (dayDiff === 0) {
+    return "Today";
+  }
+
+  if (dayDiff === 1) {
+    return "Yesterday";
+  }
+
+  if (dayDiff > 1) {
+    return `${dayDiff}d ago`;
+  }
+
+  if (dayDiff === -1) {
+    return "Tomorrow";
+  }
+
+  return `in ${Math.abs(dayDiff)}d`;
+}
 
 function buildTaskId(): string {
   return `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -68,6 +123,7 @@ type SortableTaskCardProps = {
   onDelete: (task: Task) => void;
   columnId: string;
   statusLabel: string;
+  statusDateLabel: string | null;
   isActive: boolean;
   onSelectTask: (taskId: string) => void;
 };
@@ -78,6 +134,7 @@ function SortableTaskCard({
   onDelete,
   columnId,
   statusLabel,
+  statusDateLabel,
   isActive,
   onSelectTask,
 }: SortableTaskCardProps) {
@@ -103,7 +160,16 @@ function SortableTaskCard({
       }}
       className={`task-card ${isActive ? "active" : ""}`}
       onClick={() => onSelectTask(task.id)}>
-      <span className="status-pill">{statusLabel}</span>
+      <div className="task-card-top">
+        <span className="status-pill">{statusLabel}</span>
+        {statusDateLabel && (
+          <span
+            className="status-date-chip"
+            title={`Last moved to ${statusLabel}`}>
+            {statusDateLabel}
+          </span>
+        )}
+      </div>
       <button
         type="button"
         className="task-drag-handle"
@@ -210,6 +276,7 @@ function SortableColumn({
               onDelete={onDeleteTask}
               columnId={column.id}
               statusLabel={column.title}
+              statusDateLabel={buildTaskStatusDateLabel(task, column.id)}
               isActive={activeTaskId === task.id}
               onSelectTask={onSelectTask}
             />
@@ -455,6 +522,10 @@ export default function Home() {
     if (!title) return;
 
     const id = buildTaskId();
+    const statusId = getTrackedStatusColumnId(selectedColumnId);
+    const statusDates = statusId
+      ? { [statusId]: new Date().toISOString() }
+      : undefined;
     const columns = board.columns.map((column) =>
       column.id === selectedColumnId
         ? { ...column, taskIds: [...column.taskIds, id] }
@@ -465,7 +536,7 @@ export default function Home() {
       columns,
       tasks: {
         ...board.tasks,
-        [id]: { id, title },
+        [id]: { id, title, statusDates },
       },
     };
 
@@ -666,7 +737,28 @@ export default function Home() {
       return column;
     });
 
-    const nextBoard: BoardData = { ...board, columns: nextColumns };
+    const destinationStatusId = getTrackedStatusColumnId(destinationColumnId);
+    const activeTask = board.tasks[activeId];
+
+    const nextTasks =
+      destinationStatusId && activeTask
+        ? {
+            ...board.tasks,
+            [activeId]: {
+              ...activeTask,
+              statusDates: {
+                ...activeTask.statusDates,
+                [destinationStatusId]: new Date().toISOString(),
+              },
+            },
+          }
+        : board.tasks;
+
+    const nextBoard: BoardData = {
+      ...board,
+      columns: nextColumns,
+      tasks: nextTasks,
+    };
     const nextWorkspace = replaceActiveViewBoard(nextBoard);
     if (!nextWorkspace) return;
     await persistWorkspace(nextWorkspace);

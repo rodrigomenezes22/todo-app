@@ -343,6 +343,13 @@ button.danger,
   box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.2);
 }
 
+.task-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
 .status-pill {
   display: inline-block;
   margin-bottom: 0.5rem;
@@ -354,8 +361,21 @@ button.danger,
   padding: 0.1rem 0.5rem;
 }
 
+.status-date-chip {
+  margin-left: auto;
+  margin-bottom: 0.5rem;
+  border: 1px solid #dbeafe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.08rem 0.45rem;
+  white-space: nowrap;
+}
+
 .task-drag-handle {
-  margin-left: 0.45rem;
+  margin-left: 0;
   margin-bottom: 0.5rem;
   border: 1px solid #cbd5e1;
   background: #f8fafc;

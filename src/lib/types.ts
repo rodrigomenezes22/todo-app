@@ -1,6 +1,7 @@
 export type Task = {
   id: string;
   title: string;
+  statusDates?: Partial<Record<"todo" | "doing" | "done", string>>;
 };
 
 export type Column = {
