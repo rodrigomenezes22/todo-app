@@ -29,9 +29,47 @@ const BASE_COLUMNS = [
 ];
 const TRACKED_STATUS_COLUMNS = new Set(["todo", "doing", "done"]);
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const DAYS_PER_WEEK = 7;
+const WEEKDAY_LABEL_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+});
+const MONTH_DAY_LABEL_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+});
+
+const STATUS_META: Record<"todo" | "doing" | "done", { label: string }> = {
+  todo: { label: "To Do" },
+  doing: { label: "Doing" },
+  done: { label: "Done" },
+};
+
+type CalendarEntry = {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  statusId: "todo" | "doing" | "done";
+  statusLabel: string;
+  timestamp: number;
+  dayStartMs: number;
+};
 
 function getLocalDayStartMs(date: Date): number {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function getStartOfWeek(date: Date): Date {
+  const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayOfWeek = dayStart.getDay();
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  dayStart.setDate(dayStart.getDate() + mondayOffset);
+  return dayStart;
+}
+
+function addDays(date: Date, days: number): Date {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate;
 }
 
 function getTrackedStatusColumnId(
@@ -315,6 +353,10 @@ export default function Home() {
   const [editingViewId, setEditingViewId] = useState<string | null>(null);
   const [editingViewName, setEditingViewName] = useState("");
   const [newViewName, setNewViewName] = useState("");
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<
+    "board" | "calendar"
+  >("board");
+  const [calendarWeekOffset, setCalendarWeekOffset] = useState(0);
 
   const views = useMemo(() => workspace?.views ?? [], [workspace]);
 
@@ -325,6 +367,120 @@ export default function Home() {
 
   const board = activeView?.board ?? null;
   const activeViewName = activeView?.name ?? "Untitled view";
+
+  const calendarWeekStart = useMemo(() => {
+    const thisWeek = getStartOfWeek(new Date());
+    return addDays(thisWeek, calendarWeekOffset * DAYS_PER_WEEK);
+  }, [calendarWeekOffset]);
+
+  const calendarDays = useMemo(
+    () =>
+      Array.from({ length: DAYS_PER_WEEK }, (_, dayIndex) =>
+        addDays(calendarWeekStart, dayIndex),
+      ),
+    [calendarWeekStart],
+  );
+
+  const calendarWeekLabel = useMemo(() => {
+    const weekEnd = addDays(calendarWeekStart, DAYS_PER_WEEK - 1);
+    const sameMonth =
+      calendarWeekStart.getMonth() === weekEnd.getMonth() &&
+      calendarWeekStart.getFullYear() === weekEnd.getFullYear();
+
+    if (sameMonth) {
+      return `${calendarWeekStart.toLocaleDateString(undefined, {
+        month: "long",
+      })} ${calendarWeekStart.getDate()}-${weekEnd.getDate()}, ${weekEnd.getFullYear()}`;
+    }
+
+    return `${calendarWeekStart.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })} - ${weekEnd.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })}`;
+  }, [calendarWeekStart]);
+
+  const calendarEntries = useMemo(() => {
+    if (!board) {
+      return [] as CalendarEntry[];
+    }
+
+    const entries: CalendarEntry[] = [];
+
+    for (const task of Object.values(board.tasks)) {
+      const statusDates = task.statusDates;
+      if (!statusDates) {
+        continue;
+      }
+
+      for (const statusId of Object.keys(statusDates) as Array<
+        "todo" | "doing" | "done"
+      >) {
+        const statusDate = statusDates[statusId];
+        if (!statusDate) {
+          continue;
+        }
+
+        const parsed = new Date(statusDate);
+        const timestamp = parsed.getTime();
+        if (Number.isNaN(timestamp)) {
+          continue;
+        }
+
+        entries.push({
+          id: `${task.id}-${statusId}`,
+          taskId: task.id,
+          taskTitle: task.title,
+          statusId,
+          statusLabel: STATUS_META[statusId].label,
+          timestamp,
+          dayStartMs: getLocalDayStartMs(parsed),
+        });
+      }
+    }
+
+    entries.sort((a, b) => a.timestamp - b.timestamp);
+    return entries;
+  }, [board]);
+
+  const calendarEntriesByDay = useMemo(() => {
+    const weekStartMs = calendarWeekStart.getTime();
+    const weekEndMs = addDays(calendarWeekStart, DAYS_PER_WEEK).getTime();
+    const groupedByTask = new Map<number, Map<string, CalendarEntry>>();
+
+    for (const entry of calendarEntries) {
+      if (entry.dayStartMs < weekStartMs || entry.dayStartMs >= weekEndMs) {
+        continue;
+      }
+
+      let dayMap = groupedByTask.get(entry.dayStartMs);
+      if (!dayMap) {
+        dayMap = new Map<string, CalendarEntry>();
+        groupedByTask.set(entry.dayStartMs, dayMap);
+      }
+
+      const existingForTask = dayMap.get(entry.taskId);
+      if (!existingForTask || entry.timestamp >= existingForTask.timestamp) {
+        dayMap.set(entry.taskId, entry);
+      }
+    }
+
+    const grouped = new Map<number, CalendarEntry[]>();
+    for (const [dayStartMs, dayEntriesMap] of groupedByTask.entries()) {
+      grouped.set(
+        dayStartMs,
+        Array.from(dayEntriesMap.values()).sort(
+          (a, b) => b.timestamp - a.timestamp,
+        ),
+      );
+    }
+
+    return grouped;
+  }, [calendarEntries, calendarWeekStart]);
 
   useEffect(() => {
     async function bootstrapSession() {
@@ -348,6 +504,7 @@ export default function Home() {
           const firstView = workspaceData.views[0];
           if (firstView) {
             setActiveViewId(firstView.id);
+            setCalendarWeekOffset(0);
             if (
               !firstView.board.columns.some((column) => column.id === "todo")
             ) {
@@ -396,6 +553,7 @@ export default function Home() {
     const firstView = data.views[0];
     if (firstView) {
       setActiveViewId(firstView.id);
+      setCalendarWeekOffset(0);
       if (
         !firstView.board.columns.some(
           (column) => column.id === selectedColumnId,
@@ -805,6 +963,7 @@ export default function Home() {
     };
 
     setActiveViewId(id);
+    setCalendarWeekOffset(0);
     setNewViewName("");
     setSelectedColumnId("todo");
     await persistWorkspace(nextWorkspace);
@@ -827,6 +986,7 @@ export default function Home() {
     };
 
     setActiveViewId(nextActive);
+    setCalendarWeekOffset(0);
     await persistWorkspace(nextWorkspace);
   }
 
@@ -924,7 +1084,10 @@ export default function Home() {
               <li
                 key={view.id}
                 className={activeViewId === view.id ? "active" : ""}
-                onClick={() => setActiveViewId(view.id)}>
+                onClick={() => {
+                  setActiveViewId(view.id);
+                  setCalendarWeekOffset(0);
+                }}>
                 {editingViewId === view.id ? (
                   <input
                     className="view-edit-input"
@@ -977,6 +1140,7 @@ export default function Home() {
                 )}
               </li>
             ))}
+
           </ul>
 
           <form className="view-create-form" onSubmit={handleCreateView}>
@@ -995,75 +1159,151 @@ export default function Home() {
           <div>
             <h1>{activeViewName}</h1>
             <p>
-              {board.columns.length} columns for your workflow
+              {activeWorkspaceTab === "board"
+                ? `${board.columns.length} columns for your workflow`
+                : `Weekly activity view · ${calendarWeekLabel}`}
               {sessionUsername && <span> · @{sessionUsername}</span>}
               {isSaving && <span className="saving-pill">Saving...</span>}
             </p>
           </div>
-          <button type="button" className="ghost" onClick={handleLogout}>
-            Logout
-          </button>
+          <div className="topbar-actions">
+            <div className="workspace-mode-tabs" role="tablist" aria-label="View mode">
+              <button
+                type="button"
+                className={activeWorkspaceTab === "board" ? "active" : ""}
+                role="tab"
+                aria-selected={activeWorkspaceTab === "board"}
+                onClick={() => setActiveWorkspaceTab("board")}>
+                Board
+              </button>
+              <button
+                type="button"
+                className={activeWorkspaceTab === "calendar" ? "active" : ""}
+                role="tab"
+                aria-selected={activeWorkspaceTab === "calendar"}
+                onClick={() => setActiveWorkspaceTab("calendar")}>
+                Calendar
+              </button>
+            </div>
+            <button type="button" className="ghost" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
         </header>
 
-        <section className="control-panel">
-          <form onSubmit={handleAddTask} className="task-form">
-            <input
-              placeholder="New task..."
-              value={newTaskTitle}
-              onChange={(event) => setNewTaskTitle(event.target.value)}
-            />
-            <select
-              value={selectedColumnId}
-              onChange={(event) => setSelectedColumnId(event.target.value)}>
-              {board.columns
-                .filter((column) => column.id !== "trash")
-                .map((column) => (
-                  <option key={column.id} value={column.id}>
-                    {column.title}
-                  </option>
-                ))}
-            </select>
-            <button type="submit">Add New Task</button>
-          </form>
+        {activeWorkspaceTab === "board" ? (
+          <section className="control-panel">
+            <form onSubmit={handleAddTask} className="task-form">
+              <input
+                placeholder="New task..."
+                value={newTaskTitle}
+                onChange={(event) => setNewTaskTitle(event.target.value)}
+              />
+              <select
+                value={selectedColumnId}
+                onChange={(event) => setSelectedColumnId(event.target.value)}>
+                {board.columns
+                  .filter((column) => column.id !== "trash")
+                  .map((column) => (
+                    <option key={column.id} value={column.id}>
+                      {column.title}
+                    </option>
+                  ))}
+              </select>
+              <button type="submit">Add New Task</button>
+            </form>
 
-          <form onSubmit={handleAddColumn} className="column-form">
-            <input
-              placeholder="New column"
-              value={newColumnTitle}
-              onChange={(event) => setNewColumnTitle(event.target.value)}
-            />
-            <button type="submit">Add Column</button>
-          </form>
-        </section>
+            <form onSubmit={handleAddColumn} className="column-form">
+              <input
+                placeholder="New column"
+                value={newColumnTitle}
+                onChange={(event) => setNewColumnTitle(event.target.value)}
+              />
+              <button type="submit">Add Column</button>
+            </form>
+          </section>
+        ) : (
+          <section className="control-panel calendar-controls">
+            <div className="calendar-nav">
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setCalendarWeekOffset((offset) => offset - 1)}>
+                Prev Week
+              </button>
+              <strong>{calendarWeekLabel}</strong>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setCalendarWeekOffset((offset) => offset + 1)}>
+                Next Week
+              </button>
+            </div>
+          </section>
+        )}
 
         {errorMessage && <p className="error-text">{errorMessage}</p>}
 
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}>
-          <SortableContext items={board.columns.map((column) => column.id)}>
-            <section className="kanban-grid">
-              {board.columns.map((column) => (
-                <SortableColumn
-                  key={column.id}
-                  column={column}
-                  tasks={column.taskIds
-                    .map((taskId) => board.tasks[taskId])
-                    .filter(Boolean)}
-                  onEditTask={(task) => {
-                    setEditingTask(task);
-                    setEditingTaskTitle(task.title);
-                  }}
-                  onDeleteTask={handleDeleteTask}
-                  onDeleteColumn={handleDeleteColumn}
-                  activeTaskId={activeTaskId}
-                  onSelectTask={setActiveTaskId}
-                />
-              ))}
-            </section>
-          </SortableContext>
-        </DndContext>
+        {activeWorkspaceTab === "board" ? (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}>
+            <SortableContext items={board.columns.map((column) => column.id)}>
+              <section className="kanban-grid">
+                {board.columns.map((column) => (
+                  <SortableColumn
+                    key={column.id}
+                    column={column}
+                    tasks={column.taskIds
+                      .map((taskId) => board.tasks[taskId])
+                      .filter(Boolean)}
+                    onEditTask={(task) => {
+                      setEditingTask(task);
+                      setEditingTaskTitle(task.title);
+                    }}
+                    onDeleteTask={handleDeleteTask}
+                    onDeleteColumn={handleDeleteColumn}
+                    activeTaskId={activeTaskId}
+                    onSelectTask={setActiveTaskId}
+                  />
+                ))}
+              </section>
+            </SortableContext>
+          </DndContext>
+        ) : (
+          <section className="calendar-grid" aria-label="Weekly activity calendar">
+            {calendarDays.map((day) => {
+              const dayStartMs = getLocalDayStartMs(day);
+              const entriesForDay = calendarEntriesByDay.get(dayStartMs) ?? [];
+
+              return (
+                <article key={dayStartMs} className="calendar-day">
+                  <header>
+                    <p>{WEEKDAY_LABEL_FORMATTER.format(day)}</p>
+                    <h3>{MONTH_DAY_LABEL_FORMATTER.format(day)}</h3>
+                  </header>
+
+                  {entriesForDay.length === 0 ? (
+                    <p className="calendar-empty">No activity</p>
+                  ) : (
+                    <ul>
+                      {entriesForDay.map((entry) => (
+                        <li key={entry.id}>
+                          <span
+                            className={`calendar-status-pill status-${entry.statusId}`}>
+                            {entry.statusLabel}
+                          </span>
+                          <strong>{entry.taskTitle}</strong>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </article>
+              );
+            })}
+          </section>
+        )}
       </section>
 
       {editingTask && (
