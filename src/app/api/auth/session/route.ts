@@ -7,8 +7,13 @@ export async function GET() {
     return NextResponse.json({
       authenticated: Boolean(user),
       username: user?.username ?? null,
+      userId: user?.id ?? null,
     });
   } catch {
-    return NextResponse.json({ authenticated: false, username: null });
+    return NextResponse.json({
+      authenticated: false,
+      username: null,
+      userId: null,
+    });
   }
 }

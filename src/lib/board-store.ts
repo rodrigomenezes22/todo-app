@@ -2,7 +2,10 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { ObjectId } from "mongodb";
 import { getDatabase } from "@/lib/mongodb";
-import type { BoardData, WorkspaceData } from "@/lib/types";
+import { sanitizeDayValue, sanitizeTimestamp } from "@/lib/dates";
+import { sanitizeRichText, sanitizeTaskTitle } from "@/lib/rich-text";
+import { sanitizeUserId, sanitizeUsername } from "@/lib/user-fields";
+import type { BoardData, Task, WorkspaceData } from "@/lib/types";
 
 const legacyBoardFilePath = path.join(process.cwd(), "data", "board.txt");
 
@@ -103,6 +106,52 @@ export async function readBoard(userId: string): Promise<WorkspaceData> {
   return parseWorkspacePayload(parsed) ?? fallbackWorkspace;
 }
 
+/** Task titles and rich text are cleaned here so nothing unsafe is ever stored. */
+function sanitizeWorkspace(workspace: WorkspaceData): WorkspaceData {
+  return {
+    ...workspace,
+    views: workspace.views.map((view) => ({
+      ...view,
+      board: {
+        ...view.board,
+        tasks: Object.fromEntries(
+          Object.entries(view.board.tasks).map(([taskId, task]) => {
+            const details = sanitizeRichText(task.details);
+            const createdAt = sanitizeTimestamp(task.createdAt);
+            const startDate = sanitizeDayValue(task.startDate);
+            const goalDate = sanitizeDayValue(task.goalDate);
+            const assigneeId = sanitizeUserId(task.assigneeId);
+            const assigneeName = assigneeId
+              ? sanitizeUsername(task.assigneeName)
+              : "";
+            const cleanTask: Task = {
+              ...task,
+              title: sanitizeTaskTitle(task.title),
+            };
+
+            for (const [key, value] of [
+              ["details", details],
+              ["createdAt", createdAt],
+              ["startDate", startDate],
+              ["goalDate", goalDate],
+              ["assigneeId", assigneeId],
+              ["assigneeName", assigneeName],
+            ] as const) {
+              if (value) {
+                cleanTask[key] = value;
+              } else {
+                delete cleanTask[key];
+              }
+            }
+
+            return [taskId, cleanTask];
+          }),
+        ),
+      },
+    })),
+  };
+}
+
 export async function writeBoard(
   userId: string,
   workspace: WorkspaceData,
@@ -116,7 +165,7 @@ export async function writeBoard(
     { userId: new ObjectId(userId) },
     {
       $set: {
-        workspace,
+        workspace: sanitizeWorkspace(workspace),
         updatedAt: now,
       },
       $setOnInsert: {

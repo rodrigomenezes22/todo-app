@@ -30,6 +30,7 @@ export async function POST(request: Request) {
     const response = NextResponse.json({
       success: true,
       username: user.username,
+      userId: user.id,
     });
     response.cookies.set(AUTH_COOKIE, sessionToken, {
       httpOnly: true,
