@@ -703,6 +703,9 @@ button.danger:hover,
   min-height: 0;
 }
 
+/* No `overflow: hidden` here on purpose: it would clip a task card as soon as
+   it was dragged past the column edge. The header and body round their own
+   outer corners instead, which gives the same look without the clipping. */
 .kanban-column {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -712,12 +715,12 @@ button.danger:hover,
   min-width: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 .column-header {
   border-top: 3px solid transparent;
   border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -776,6 +779,7 @@ button.danger:hover,
   align-content: start;
   min-height: 200px;
   background: var(--surface-sunken);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
 }
 
 /* ---------- Task card ---------- */
@@ -809,6 +813,13 @@ button.danger:hover,
   align-items: center;
   gap: 0.4rem;
   margin-bottom: 0.5rem;
+}
+
+/* Pull the grip flush with the card's left edge; the pill's own padding
+   would otherwise make the row look indented. */
+.task-card-top .task-drag-handle {
+  margin-left: -0.2rem;
+  margin-right: -0.1rem;
 }
 
 .status-pill {
@@ -866,42 +877,37 @@ button.danger:hover,
 }
 
 .task-drag-handle {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
+  flex-shrink: 0;
+  width: 1.35rem;
+  height: 1.35rem;
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #b4bfd0;
+  color: #8996ab;
   padding: 0;
-  opacity: 0;
   cursor: grab;
   transition:
-    opacity 0.15s ease,
     background-color 0.15s ease,
     color 0.15s ease;
 }
 
 .task-drag-handle svg {
-  width: 0.9rem;
-  height: 0.9rem;
+  width: 0.95rem;
+  height: 0.95rem;
   fill: currentColor;
 }
 
-.task-card:hover .task-drag-handle,
-.task-card.active .task-drag-handle,
+.task-drag-handle:hover,
 .task-drag-handle:focus-visible {
-  opacity: 1;
+  background: var(--surface-sunken);
+  color: #46536b;
 }
 
-.task-drag-handle:hover {
-  background: var(--surface-sunken);
-  color: #64748b;
+.task-drag-handle:active {
+  cursor: grabbing;
 }
 
 .task-card p {
@@ -913,7 +919,6 @@ button.danger:hover,
 .task-title {
   font-weight: 600;
   letter-spacing: -0.01em;
-  padding-right: 1.4rem;
   overflow-wrap: anywhere;
 }
 

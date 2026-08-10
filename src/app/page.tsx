@@ -284,10 +284,29 @@ function SortableTaskCard({
         transform: CSS.Transform.toString(transform),
         transition,
         opacity: isDragging ? 0.6 : 1,
+        // Lift the card out of the flow so it stays on top of neighbouring
+        // cards and columns for the whole drag, not just its own column.
+        zIndex: isDragging ? 100 : undefined,
+        boxShadow: isDragging ? "var(--shadow-lg)" : undefined,
       }}
       className={`task-card ${isActive ? "active" : ""}`}
       onClick={() => onSelectTask(task.id)}>
       <div className="task-card-top">
+        {!readOnly && (
+          <button
+            type="button"
+            className="task-drag-handle"
+            aria-label="Drag task"
+            title="Drag task"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            {...attributes}
+            {...listeners}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 4h2.2v2.2H9V4zm3.8 0H15v2.2h-2.2V4zM9 8.9h2.2v2.2H9V8.9zm3.8 0H15v2.2h-2.2V8.9zM9 13.8h2.2V16H9v-2.2zm3.8 0H15V16h-2.2v-2.2zM9 18.7h2.2v2.2H9v-2.2zm3.8 0H15v2.2h-2.2v-2.2z" />
+            </svg>
+          </button>
+        )}
         <span className="status-pill">{statusLabel}</span>
         {task.assigneeName && (
           <span
@@ -307,21 +326,6 @@ function SortableTaskCard({
           </span>
         )}
       </div>
-      {!readOnly && (
-        <button
-          type="button"
-          className="task-drag-handle"
-          aria-label="Drag task"
-          title="Drag task"
-          onClick={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          {...attributes}
-          {...listeners}>
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M9 4h2.2v2.2H9V4zm3.8 0H15v2.2h-2.2V4zM9 8.9h2.2v2.2H9V8.9zm3.8 0H15v2.2h-2.2V8.9zM9 13.8h2.2V16H9v-2.2zm3.8 0H15V16h-2.2v-2.2zM9 18.7h2.2v2.2H9v-2.2zm3.8 0H15v2.2h-2.2v-2.2z" />
-          </svg>
-        </button>
-      )}
       <p className="task-title">{task.title}</p>
       {detailsHtml && (
         <div
@@ -437,6 +441,8 @@ function SortableColumn({
         transform: CSS.Transform.toString(transform),
         transition,
         opacity: isDragging ? 0.75 : 1,
+        zIndex: isDragging ? 50 : undefined,
+        boxShadow: isDragging ? "var(--shadow-lg)" : undefined,
       }}
       className="kanban-column">
       <header
