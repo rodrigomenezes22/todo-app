@@ -691,6 +691,12 @@ export default function Home() {
     users: PlatformUser[];
   }>({ viewId: "", users: [] });
 
+  // Assignable people for a dashboard shared with you (owner + recipients).
+  const [sharedMembers, setSharedMembers] = useState<{
+    viewId: string;
+    members: PlatformUser[];
+  }>({ viewId: "", members: [] });
+
   const [shareView, setShareView] = useState<BoardView | null>(null);
   const [platformUsers, setPlatformUsers] = useState<PlatformUser[]>([]);
   const [sharedUserIds, setSharedUserIds] = useState<string[]>([]);
@@ -720,10 +726,17 @@ export default function Home() {
 
   const board = activeView?.board ?? null;
   const activeViewName = activeView?.name ?? "Untitled view";
-  const isReadOnlyView = Boolean(activeView?.sharedBy);
+  const isSharedView = Boolean(activeView?.sharedBy);
   const ownedViewId = activeView && !activeView.sharedBy ? activeView.id : "";
 
   const viewMembers = useMemo(() => {
+    // A dashboard shared with you: its members are loaded from the owner.
+    if (isSharedView) {
+      return activeView && sharedMembers.viewId === activeView.id
+        ? sharedMembers.members
+        : ([] as PlatformUser[]);
+    }
+
     if (!ownedViewId || !sessionUserId || !sessionUsername) {
       return [] as PlatformUser[];
     }
@@ -734,7 +747,15 @@ export default function Home() {
     return viewRecipients.viewId === ownedViewId
       ? [owner, ...viewRecipients.users]
       : [owner];
-  }, [ownedViewId, sessionUserId, sessionUsername, viewRecipients]);
+  }, [
+    activeView,
+    isSharedView,
+    ownedViewId,
+    sessionUserId,
+    sessionUsername,
+    sharedMembers,
+    viewRecipients,
+  ]);
 
   const filteredShareUsers = useMemo(() => {
     const term = shareSearch.trim().toLowerCase();
@@ -1022,6 +1043,42 @@ export default function Home() {
     };
   }, [ownedViewId]);
 
+  // Same idea for a dashboard shared with you: its members come from the owner.
+  const sharedOwnerId = activeView?.sharedByUserId ?? "";
+  const sharedSourceViewId = activeView?.sourceViewId ?? "";
+  const activeViewKey = activeView?.id ?? "";
+
+  useEffect(() => {
+    if (!isSharedView || !sharedOwnerId || !sharedSourceViewId) return;
+
+    let cancelled = false;
+
+    async function loadMembers() {
+      try {
+        const response = await fetch(
+          `/api/shared-view?ownerId=${encodeURIComponent(
+            sharedOwnerId,
+          )}&viewId=${encodeURIComponent(sharedSourceViewId)}`,
+        );
+        if (!response.ok) throw new Error("Could not load members");
+
+        const payload = (await response.json()) as { members: PlatformUser[] };
+        if (!cancelled) {
+          setSharedMembers({ viewId: activeViewKey, members: payload.members });
+        }
+      } catch {
+        if (!cancelled) {
+          setSharedMembers({ viewId: activeViewKey, members: [] });
+        }
+      }
+    }
+
+    void loadMembers();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSharedView, sharedOwnerId, sharedSourceViewId, activeViewKey]);
+
   async function loadWorkspace() {
     const response = await fetch("/api/board");
     if (!response.ok) {
@@ -1037,6 +1094,21 @@ export default function Home() {
     }
   }
 
+  async function throwOnFailedSave(response: Response) {
+    if (response.ok) return;
+
+    let details = "";
+    try {
+      const payload = (await response.json()) as { error?: string };
+      details = payload.error ? `: ${payload.error}` : "";
+    } catch {
+      // Ignore invalid JSON body and use the status code below.
+    }
+
+    throw new Error(`Could not save changes (HTTP ${response.status})${details}`);
+  }
+
+  /** Saves the views this user owns to their own workspace document. */
   async function persistWorkspace(nextWorkspace: WorkspaceData) {
     setWorkspace(nextWorkspace);
     setIsSaving(true);
@@ -1050,21 +1122,7 @@ export default function Home() {
           views: nextWorkspace.views.filter((view) => !view.sharedBy),
         } satisfies WorkspaceData),
       });
-
-      if (!response.ok) {
-        let details = "";
-
-        try {
-          const payload = (await response.json()) as { error?: string };
-          details = payload.error ? `: ${payload.error}` : "";
-        } catch {
-          // Ignore invalid JSON body and use status text below.
-        }
-
-        throw new Error(
-          `Could not save changes (HTTP ${response.status})${details}`,
-        );
-      }
+      await throwOnFailedSave(response);
     } catch (error) {
       const message =
         error instanceof Error
@@ -1076,15 +1134,62 @@ export default function Home() {
     }
   }
 
-  function replaceActiveViewBoard(nextBoard: BoardData): WorkspaceData | null {
-    if (!workspace || !activeView || activeView.sharedBy) return null;
+  /** Saves an edit to a shared dashboard back into its owner's workspace. */
+  async function persistSharedView(view: BoardView, nextWorkspace: WorkspaceData) {
+    setWorkspace(nextWorkspace);
+    setIsSaving(true);
+    setErrorMessage("");
 
-    return {
+    try {
+      if (!view.sharedByUserId || !view.sourceViewId) {
+        throw new Error("Could not save changes to the shared board.");
+      }
+
+      const response = await fetch("/api/shared-view", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerId: view.sharedByUserId,
+          viewId: view.sourceViewId,
+          board: view.board,
+        }),
+      });
+      await throwOnFailedSave(response);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not save changes to the shared board.";
+      setErrorMessage(message);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  /**
+   * Commits a board edit to the active view, routing it to the owner's workspace
+   * when the view was shared with this user, or to this user's own otherwise.
+   */
+  async function commitActiveBoard(nextBoard: BoardData) {
+    if (!workspace || !activeView) return;
+
+    const nextWorkspace: WorkspaceData = {
       ...workspace,
       views: workspace.views.map((view) =>
         view.id === activeView.id ? { ...view, board: nextBoard } : view,
       ),
     };
+
+    if (activeView.sharedBy) {
+      const nextView = nextWorkspace.views.find(
+        (view) => view.id === activeView.id,
+      );
+      if (nextView) {
+        await persistSharedView(nextView, nextWorkspace);
+      }
+    } else {
+      await persistWorkspace(nextWorkspace);
+    }
   }
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
@@ -1157,7 +1262,6 @@ export default function Home() {
   }
 
   function openTaskDrawer(mode: "create" | "edit", task?: Task) {
-    if (isReadOnlyView) return;
 
     if (mode === "create") {
       const fallbackColumn =
@@ -1196,7 +1300,7 @@ export default function Home() {
   /** Adds a new task or saves the one being edited, including a column move. */
   async function handleTaskDrawerSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!board || !workspace || !activeView || isReadOnlyView) return;
+    if (!board || !workspace || !activeView) return;
 
     const title = draftTitle.trim();
     if (!title) return;
@@ -1283,13 +1387,11 @@ export default function Home() {
     };
 
     closeTaskDrawer();
-    const nextWorkspace = replaceActiveViewBoard(nextBoard);
-    if (!nextWorkspace) return;
-    await persistWorkspace(nextWorkspace);
+    await commitActiveBoard(nextBoard);
   }
 
   async function handleDeleteTask(task: Task) {
-    if (!board || !workspace || !activeView || isReadOnlyView) return;
+    if (!board || !workspace || !activeView) return;
 
     const sourceColumn = findTaskColumn(board, task.id);
     if (!sourceColumn) return;
@@ -1312,14 +1414,12 @@ export default function Home() {
       setActiveTaskId(null);
     }
 
-    const nextWorkspace = replaceActiveViewBoard(nextBoard);
-    if (!nextWorkspace) return;
-    await persistWorkspace(nextWorkspace);
+    await commitActiveBoard(nextBoard);
   }
 
   async function handleAddColumn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!board || !workspace || !activeView || isReadOnlyView) return;
+    if (!board || !workspace || !activeView) return;
 
     const title = newColumnTitle.trim();
     if (!title) return;
@@ -1342,9 +1442,7 @@ export default function Home() {
     };
 
     setNewColumnTitle("");
-    const nextWorkspace = replaceActiveViewBoard(nextBoard);
-    if (!nextWorkspace) return;
-    await persistWorkspace(nextWorkspace);
+    await commitActiveBoard(nextBoard);
   }
 
   async function handleDeleteColumn(columnId: string) {
@@ -1352,8 +1450,7 @@ export default function Home() {
       !board ||
       PROTECTED_COLUMNS.has(columnId) ||
       !workspace ||
-      !activeView ||
-      isReadOnlyView
+      !activeView
     )
       return;
 
@@ -1377,14 +1474,11 @@ export default function Home() {
       setDraftColumnId("todo");
     }
 
-    const nextWorkspace = replaceActiveViewBoard(nextBoard);
-    if (!nextWorkspace) return;
-    await persistWorkspace(nextWorkspace);
+    await commitActiveBoard(nextBoard);
   }
 
   async function handleDragEnd(event: DragEndEvent) {
-    if (!board || !event.over || !workspace || !activeView || isReadOnlyView)
-      return;
+    if (!board || !event.over || !workspace || !activeView) return;
 
     const activeId = String(event.active.id);
     const overId = String(event.over.id);
@@ -1406,9 +1500,7 @@ export default function Home() {
         ...board,
         columns: arrayMove(board.columns, oldIndex, newIndex),
       };
-      const nextWorkspace = replaceActiveViewBoard(nextBoard);
-      if (!nextWorkspace) return;
-      await persistWorkspace(nextWorkspace);
+      await commitActiveBoard(nextBoard);
       return;
     }
 
@@ -1490,14 +1582,12 @@ export default function Home() {
       columns: nextColumns,
       tasks: nextTasks,
     };
-    const nextWorkspace = replaceActiveViewBoard(nextBoard);
-    if (!nextWorkspace) return;
-    await persistWorkspace(nextWorkspace);
+    await commitActiveBoard(nextBoard);
   }
 
   /** Dropping a bar body moves the whole span; an edge moves just that date. */
   async function handleTimelineDragEnd(event: DragEndEvent) {
-    if (!board || !event.over || !workspace || !activeView || isReadOnlyView) {
+    if (!board || !event.over || !workspace || !activeView) {
       return;
     }
 
@@ -1548,9 +1638,7 @@ export default function Home() {
       },
     };
 
-    const nextWorkspace = replaceActiveViewBoard(nextBoard);
-    if (!nextWorkspace) return;
-    await persistWorkspace(nextWorkspace);
+    await commitActiveBoard(nextBoard);
   }
 
   function startViewRename(view: BoardView) {
@@ -1786,7 +1874,6 @@ export default function Home() {
         <button
           type="button"
           className="new-task-btn"
-          disabled={isReadOnlyView}
           onClick={() => openTaskDrawer("create")}>
           New Task
         </button>
@@ -1909,18 +1996,19 @@ export default function Home() {
           <div>
             <h1>
               {activeViewName}
-              {isReadOnlyView && (
+              {isSharedView && (
                 <span className="shared-badge">Shared with you</span>
               )}
             </h1>
             <p>
-              {isReadOnlyView
-                ? `Shared by @${activeView.sharedBy} · read-only`
-                : activeWorkspaceTab === "board"
-                  ? `${board.columns.length} columns · ${
-                      Object.keys(board.tasks).length
-                    } tasks`
-                  : `Weekly schedule · ${calendarWeekLabel}`}
+              {isSharedView && (
+                <span>Shared by @{activeView.sharedBy} · </span>
+              )}
+              {activeWorkspaceTab === "board"
+                ? `${board.columns.length} columns · ${
+                    Object.keys(board.tasks).length
+                  } tasks`
+                : `Weekly schedule · ${calendarWeekLabel}`}
               {sessionUsername && <span> · @{sessionUsername}</span>}
               {isSaving && <span className="saving-pill">Saving...</span>}
             </p>
@@ -1945,29 +2033,25 @@ export default function Home() {
               </button>
             </div>
 
-            {!isReadOnlyView && (
-              <>
-                <button
-                  type="button"
-                  className="primary-action"
-                  onClick={() => openTaskDrawer("create")}>
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z" />
-                  </svg>
-                  Add Task
-                </button>
-                {activeWorkspaceTab === "board" && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => {
-                      setNewColumnTitle("");
-                      setIsColumnDialogOpen(true);
-                    }}>
-                    Add Column
-                  </button>
-                )}
-              </>
+            <button
+              type="button"
+              className="primary-action"
+              onClick={() => openTaskDrawer("create")}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z" />
+              </svg>
+              Add Task
+            </button>
+            {activeWorkspaceTab === "board" && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  setNewColumnTitle("");
+                  setIsColumnDialogOpen(true);
+                }}>
+                Add Column
+              </button>
             )}
 
             <button type="button" className="ghost" onClick={handleLogout}>
@@ -2002,7 +2086,7 @@ export default function Home() {
                         current === taskId ? null : taskId,
                       )
                     }
-                    readOnly={isReadOnlyView}
+                    readOnly={false}
                   />
                 ))}
               </section>
@@ -2041,9 +2125,8 @@ export default function Home() {
                   <h2>Schedule</h2>
                   <p>
                     Each bar runs from the start date (or creation, if none) to
-                    the goal date.
-                    {!isReadOnlyView &&
-                      " Drag a bar to move the whole span, or drag its edges to change the start and goal."}
+                    the goal date. Drag a bar to move the whole span, or drag
+                    its edges to change the start and goal.
                   </p>
                 </div>
               </header>
@@ -2093,7 +2176,7 @@ export default function Home() {
                         <TimelineBar
                           key={row.taskId}
                           row={row}
-                          readOnly={isReadOnlyView}
+                          readOnly={false}
                           onOpenTask={(taskId) => {
                             const task = board.tasks[taskId];
                             if (task) openTaskDrawer("edit", task);

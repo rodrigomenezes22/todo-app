@@ -1,7 +1,12 @@
 import { ObjectId } from "mongodb";
 import { getDatabase } from "@/lib/mongodb";
-import { readBoard } from "@/lib/board-store";
-import type { BoardView, PlatformUser } from "@/lib/types";
+import { readBoard, writeBoard } from "@/lib/board-store";
+import type {
+  BoardData,
+  BoardView,
+  PlatformUser,
+  WorkspaceData,
+} from "@/lib/types";
 
 /** Shared views are re-keyed so they cannot collide with the recipient's own view ids. */
 export const SHARED_VIEW_ID_PREFIX = "shared:";
@@ -264,4 +269,80 @@ export async function readSharedViewsForUser(
     const owner = (a.sharedBy ?? "").localeCompare(b.sharedBy ?? "");
     return owner !== 0 ? owner : a.name.localeCompare(b.name);
   });
+}
+
+/** True when `ownerId` has shared `viewId` with `recipientId` — the gate for any recipient write. */
+async function isViewSharedWith(
+  ownerObjectId: ObjectId,
+  viewId: string,
+  recipientObjectId: ObjectId,
+): Promise<boolean> {
+  await ensureShareIndexes();
+  const db = await getDatabase();
+  const share = await db.collection<ShareDocument>("shares").findOne({
+    ownerId: ownerObjectId,
+    viewId,
+    sharedWithId: recipientObjectId,
+  });
+
+  return share !== null;
+}
+
+/** People assignable on a shared dashboard: its owner plus every recipient (the caller included). */
+export async function listSharedViewMembers(
+  recipientId: string,
+  ownerId: string,
+  viewId: string,
+): Promise<PlatformUser[]> {
+  const ownerObjectId = toObjectId(ownerId);
+  const recipientObjectId = toObjectId(recipientId);
+  if (!ownerObjectId || !recipientObjectId) {
+    throw new Error("Unknown user.");
+  }
+
+  if (!(await isViewSharedWith(ownerObjectId, viewId, recipientObjectId))) {
+    throw new Error("You do not have access to this dashboard.");
+  }
+
+  const ownerUsername = (await findUsernames([ownerObjectId])).get(ownerId);
+  const recipients = await listViewRecipients(ownerId, viewId);
+
+  return ownerUsername
+    ? [{ id: ownerId, username: ownerUsername }, ...recipients]
+    : recipients;
+}
+
+/**
+ * Persists an edit a recipient made on a dashboard shared with them, writing the
+ * new board back into the owner's workspace. Only the one shared view is touched.
+ */
+export async function saveSharedViewBoard(
+  recipientId: string,
+  ownerId: string,
+  viewId: string,
+  board: BoardData,
+): Promise<void> {
+  const ownerObjectId = toObjectId(ownerId);
+  const recipientObjectId = toObjectId(recipientId);
+  if (!ownerObjectId || !recipientObjectId) {
+    throw new Error("Unknown user.");
+  }
+
+  if (!(await isViewSharedWith(ownerObjectId, viewId, recipientObjectId))) {
+    throw new Error("You do not have access to this dashboard.");
+  }
+
+  const workspace = await readBoard(ownerId);
+  if (!workspace.views.some((view) => view.id === viewId)) {
+    throw new Error("Dashboard not found.");
+  }
+
+  const nextWorkspace: WorkspaceData = {
+    ...workspace,
+    views: workspace.views.map((view) =>
+      view.id === viewId ? { ...view, board } : view,
+    ),
+  };
+
+  await writeBoard(ownerId, nextWorkspace);
 }
